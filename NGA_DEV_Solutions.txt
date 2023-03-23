@@ -1,0 +1,44 @@
+﻿// Declare the hadoop path which containing files
+val hadoopPath = "/testdir/sensorInfo/csv"
+
+// Create Fs for Hadoop Config
+import org.apache.hadoop.fs.{FileSystem, Path}
+val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
+
+//Listing file from the given hadoop path and excluding "SUCCESS" file, if have
+val fileList = fs.listStatus(new Path(hadoopPath)).filter(!_.endsWith("SUCCESS")).map(_.getPath.toString)
+
+//Create emptydataframe for appending the records
+var df = Seq.empty[(String, String)].toDF("sensor-id", "humidity")
+
+//Iterating the hadoop files to read as DataFrame
+fileList.foreach{ file =>
+val df1 = spark.read.option("header", true).csv(file)
+df = df1.union(df)
+}
+
+//Now filtering the valid humidity and invalid humidity
+val validHumidity = df.filter($"humidity" =!= "NaN")
+
+val invalidHumidity = df.filter($"humidity" === "NaN")
+
+//We are taking count of valid, invalid records and files are processed
+val validHumidityCount = validHumidity.count()
+val invalidHumidityCount = invalidHumidity.count()
+val fileProcessedCount = fileList.length
+
+//We are fetching only invalidHumanity which will doesnt exist in valid records
+val onlyInvalidHumidity = invalidHumidity.as("invalid").join(validHumidity.as("valid"), $"invalid.sensor-id" === $"valid.sensor-id", "left_anti").select("invalid.*")
+
+val processedDf = validHumidity.union(onlyInValidHumidity)
+
+//Getting aggregations of humidity based on sensor-id
+val finalProcessedDf = processedDf.groupBy("sensor-id").agg(min("humidity").as("min"), avg("humidity").as("avg"), max("humidity").as("max"))
+
+//Conclusions of this code is
+println("Num of processed files: " + fileProcessedCount)
+println("Num of processed measurements: " + validHumidityCount)
+println("Num of failed measurements: " + invalidHumidityCount)
+
+println("Sensors with highest avg humidity: " + finalProcessedDf.show(false))
+
